@@ -1,0 +1,150 @@
+The current infrastructure of the nLight system, as far as I can tell, is the following:
+
+
+
+ -----------------                 ------------                --------------------                    --------------------
+|                 |               |            |    WiFi      |                    |                  |                    |
+|                 | physical wire | Occupancy  |  connection  | nLight SensorView  |  LAN connection  | Web application    |
+|   Light fixture | ------------- |   Sensor   | ------------ | Software           | ---------------- |                    |
+|                 |               |            |  UDP packet  | (Windows computer) |   JSON Object    |                    |
+|                 |               |            |              |                    |                  |                    |
+ ----------------      (1)         ------------      (2)       --------------------       (3)          --------------------
+                                        |
+                                        |
+                                        | UDP socket connection
+                                        |
+                                        |
+                                ---------------
+                               |               |
+                               |  sMAP source  | -- sMAP source will turn actuation/read requests
+                               |               |    into raw UDP packets that will then be sent directly
+                               |               |    to the wifi-enabled occupancy sensor
+                                ---------------
+
+The web application takes user input from a web form, translates that into a
+JSON object which is then sent to the nLight sensorview software, which in turn
+converts that information into a UDP packet which is sent to the occupancy
+sensor. We are able to sniff the JSON objects along connection (3) and look at
+the raw UDP packets along connection (2).
+
+From the web inputs, we can click on the page and view the generated JSON
+objects (open the Javascript debugging console, click on the "Network" tab and
+look at the POST requests). These look like
+
+{"deviceId":"007782A8",
+  "genericSettings":[{"type":4,"split":"Pole","index":1,"value":"1"},
+  {"type":13,"split":"Pole","index":1,"value":"6"},
+  {"type":19,"split":"Pole","index":1,"value":"2"},
+  {"type":"1","split":"Pole","index":1,"value":2},
+  {"type":"2","split":"Pole","index":1,"value":2},
+  {"type":"3","split":"Pole","index":1,"value":2},
+  {"type":63,"split":null,"index":0,"value":"1"},
+  {"type":51,"split":"Pole","index":1,"value":"1"},
+  {"type":35,"split":"Pole","index":1,"value":"12"},
+  {"type":30,"split":"Pole","index":1,"value":"3"},
+  {"type":43,"split":"Pole","index":1,"value":"3"},
+  {"type":10,"split":"Pole","index":1,"value":"5"},
+  {"type":7,"split":"Pole","index":1,"value":"1"},
+  {"type":50,"split":null,"index":0,"value":"1"},
+  {"type":55,"split":null,"index":0,"value":"1"},
+  {"type":6,"split":"Pole","index":1,"value":"1"},
+  {"type":53,"split":null,"index":0,"value":"15"},
+  {"type":47,"split":null,"index":0,"value":"1"},
+  {"type":20,"split":null,"index":0,"value":"3"},
+  {"type":21,"split":null,"index":0,"value":"2"},
+  {"type":22,"split":null,"index":0,"value":"6"},
+  {"type":5,"split":null,"index":0,"value":"1"},
+  {"type":26,"split":"Pole","index":1,"value":"11"},
+  {"type":48,"split":null,"index":0,"value":"1"},
+  {"type":49,"split":null,"index":0,"value":"1"}],
+"action":"0"}
+
+From what I can tell, type 35 is "Set Occupied Level" and type 30 is "Set
+Unoccupied Level", but I'm not sure what the other fields mean. We take note of
+the deviceId "007782A8" because this shows up later.
+
+Each time we generate the POSTing of a JSON action object to the SensorView
+software, we can sniff the UDP traffic along connection (2). There are 3
+lengths (and thus probably 3 categories) of packets that we see:
+
+Length 13: a5:00:77:82:a8:ff:ff:ff:f1:0d:0a:81:70
+Length 14: a5:00:77:82:a8:ff:ff:ff:f1:0e:04:12:8f:61
+Length 37: a5:ff:ff:ff:f1:00:77:82:a8:25:0b:6e:43:4d:52:42:2d:36:2d:57:49:46:49:2d:44:00:00:00:00:00:00:34:33:31:33:d5:36
+
+Looking at these packets, there are a couple patterns that jump out at us immediately.
+
+  1) The packets all start with `a5`, which is probably some sort of header.
+
+  2) We can see the device identifier `007782a8` in the bytes, which seems to
+  swap places with `fffffff1`. Looking at several packets, we can see that when
+  we SEND a UDP packet to the occupancy sensor, we get 00778218fffffff1, and
+  when we RECEIVE a UDP packet from the occupancy sensor, we get
+  fffffff1007782a8. The order of this probably specifies read/write or
+  something similar.
+
+  3) Also known: when we receive a length 34 packet (like a5:ff:ff:ff:f1:00:77:82:a8:22:02:0e:09:6a:00:21:30:28:71:62:00:01:00:59:00:00:68:51:f0:05:12:10:4b:4c) from the
+  occupancy sensor, we know the change to settings has been applied. It also
+  seems like the length-13 bytes are sent by SensorView repeatedly until that length 34 packet
+  is sent. The length-14 bytes are sent as an ACK to the original actuation command.
+
+
+This takes care of the first 9 bytes of the packet, but it is unclear what the
+last ones mean. If we can figure out how to reliably generate custom UDP
+packets that follow the required schema, then we can tell the occupancy sensor
+what to do. Worst case scenario is we explicitly figure out which UDP packet
+sequence corresponds to each possible command we want to perform, and then just
+send a pre-made packet instead of constructing it from scratch.
+ 
+
+ Attached is the UDP sequence for the following actions taken on the Windows computer:
+
+ - start SensorView
+ - Launch the sensorview webpage
+ - set occupied level to 80% and apply
+ - set unoccupied level to 70% and apply
+ - set both occupied and unoccupied levels to 20% and apply
+
+Here are the packets. 192.168.1.5 is the occupancy sensor, and 192.168.1.6 is the SensorView computer. Repeated packets
+are probably because UDP has no guaranteed delivery mechanism (unlike TCP), so packets are sent multiple times to give a higher
+probability of delivery.
+
+{"0": {"src": "192.168.1.5", "dst": "192.168.1.255", "data": "a5fffffffd007782a80e12129561"}, 
+"1": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10e04128f61"}, 
+"2": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"3": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a8250b6e434d52422d362d574946492d4400000000000034333133d536"},
+"4": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"5": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"6": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a8250b6e434d52422d362d574946492d4400000000000034333133d536"},
+"7": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"8": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"9": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a8250b6e434d52422d362d574946492d4400000000000034333133d536"},
+"10": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"11": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"12": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a8250b6e434d52422d362d574946492d4400000000000034333133d536"},
+"13": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"14": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"15": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a8250b6e434d52422d362d574946492d4400000000000034333133d536"},
+"16": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d0a8170"},
+"17": {"src": "192.168.1.5", "dst": "192.168.1.255", "data": "a5fffffffd007782a80e120e957d"},
+"18": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10e04128f61"},
+"19": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d018a70"},
+"20": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d018a70"},
+"21": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a822020e096a0021302871620001005900006851f0051110484c"},
+"22": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff1222d0e096a0021302870620000005900006851f0058110f64d"},
+"23": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff1222d0e096a0021302870620000005900006851f0058110f64d"},
+"24": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a80e042d8f5e"},
+"25": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d018a70"},
+"26": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d018a70"},
+"27": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a822020e096a0021302871620001005900006851f0058110d84c"},
+"28": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff1222d0e096a0021302870620000005900006851f0058710f04d"},
+"29": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff1222d0e096a0021302870620000005900006851f0058710f04d"},
+"30": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a80e042d8f5e"},
+"31": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d018a70"},
+"32": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d018a70"},
+"33": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a822020e096a0021302871620001005900006851f0058710de4c"},
+"34": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff1222d0e096a0021302870620000005900006851f0052210554d"},
+"35": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff1222d0e096a0021302870620000005900006851f0052210554d"},
+"36": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a80e042d8f5e"},
+"37": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d018a70"},
+"38": {"src": "192.168.1.6", "dst": "192.168.1.5", "data": "a5007782a8fffffff10d018a70"},
+"39": {"src": "192.168.1.5", "dst": "192.168.1.6", "data": "a5fffffff1007782a822020e096a0021302871620001005900006851f00522107b4c"}}

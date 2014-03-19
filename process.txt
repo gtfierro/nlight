@@ -1,0 +1,14 @@
+User: "Set Occupied level to 20%, Unoccupied level to 10%"
+
+Sensorview -> Occupancy sensor
+a5:00:77:82:a8:ff:ff:ff:f1:22:2d:0e:09:6a:00:21:30:28:70:62:00:00:00:59:00:00:68:51:f0:05:21:10:56:4d
+
+above packet is sent until Sensorview receives following packet from occupancy sensor
+Occupancy sensor -> Sensorview
+ia5:ff:ff:ff:f1:00:77:82:a8:0e:04:2d:8f:5e
+
+Sensorview -> Occupancy sensor
+a5:00:77:82:a8:ff:ff:ff:f1:0d:01:8a:70
+
+above packet is sent until Sensor view receives following packet from occupancy sensor
+a5:ff:ff:ff:f1:00:77:82:a8:22:02:0e:09:6a:00:21:30:28:71:62:00:01:00:59:00:00:68:51:f0:05:11:10:48:4c
